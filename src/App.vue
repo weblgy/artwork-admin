@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue' // 👈 加个 computed
-import { Plus, Delete } from '@element-plus/icons-vue' // 加个删除图标备用
 import type { UploadProps } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus' // 引入弹窗组件
 import axios from 'axios' // 👈 记得引入 axios
-import { Edit } from '@element-plus/icons-vue' // 👈 记得引入 Edit 图标
+import { Delete, Edit, Search, UploadFilled } from '@element-plus/icons-vue'
 
 const API_BASE = 'http://localhost:8080/api/artwork'
-const editDialogVisible = ref(false)
-const editForm = ref({ id: 0, title: '' })
 // --- TS 接口定义 (Type Definition) ---
 interface Artwork {
   id: number;
@@ -22,55 +19,89 @@ interface Artwork {
 const title = ref<string>('')
 const imageUrl = ref<string>('')
 const artworkList = ref<Artwork[]>([]) // 👈 存放画稿列表
+const searchText = ref('') // 记录搜索框里的字
+const editDialogVisible = ref(false)
+const editForm = ref({ id: 0, title: '', category: '' })
+const activeCategory = ref('全部') // 首页选中的 Tab
+const categories = ref<string[]>([]) // 存放从后端查回来的分类列表
+const uploadForm = ref({ title: '', category: '' }) // 上传表单数据
+const dialogVisible = ref(false) // 控制弹窗显示/隐藏
+
+
+
+
 
 // --- 方法：获取列表 ---
-const fetchList = async () => {
+
+// 1. 获取所有分类 (新增)
+const fetchCategories = async () => {
   try {
-    const res = await axios.get(API_BASE + '/list')
-    // TS 自动推导 res.data 是 any，但在运行时它就是数组
-    artworkList.value = res.data
-  } catch (err) {
-    console.error('获取列表失败', err)
+    const res = await axios.get(API_BASE + '/categories')
+    categories.value = res.data
+  } catch (error) {
+    console.error('获取分类失败', error)
   }
 }
+// 2. 获取列表 (修改：加入 category 参数)
+const fetchList = async () => {
+  try {
+    const res = await axios.get(API_BASE + '/list', {
+      params: {
+        title: searchText.value,     // 搜索词
+        category: activeCategory.value // 当前选中的分类
+      }
+    })
+    artworkList.value = res.data
+  } catch (error) {
+    console.error('加载失败', error)
+    ElMessage.error('加载失败')
+  }
+}
+// 3. 监听 Tab 切换
+const handleTabChange = () => {
+  fetchList() // 切换分类后重新查数据
+}
+
+// 4. 上传成功回调 (修改：上传完刷新分类列表)
+const handleUploadSuccess = (response: any) => {
+  ElMessage.success('上传成功！')
+  dialogVisible.value = false
+  uploadForm.value.title = ''
+  // uploadForm.value.category = '' // 这里保留分类，方便用户连续上传同一类图片
+
+  fetchList()       // 刷新图片列表
+  fetchCategories() // 👈 关键：刷新分类列表 (因为可能刚刚创建了新分类)
+}
+
+// 上传失败的回调
+const handleUploadError = (error: any) => {
+  console.error(error)
+  ElMessage.error('上传失败，请检查网络或后端')
+}
+
+// 解决用户输入后忘记按回车的问题
+const handleCategoryBlur = (e: any) => {
+  // 如果用户输入了内容，但没按回车，e.target.value 会有值
+  if (e.target.value) {
+    uploadForm.value.category = e.target.value
+  }
+}
+
+// 监听搜索事件 (回车或点击图标时触发)
+const handleSearch = () => {
+  fetchList() // 重新请求数据
+}
+
 // --- 计算属性：提取所有图片链接，供灯箱预览使用 ---
 const allImageUrls = computed(() => {
   return artworkList.value.map(item => item.imageUrl)
 })
 
-// --- 生命周期：页面加载时触发 ---
+// --- 生命周期 ---
 onMounted(() => {
-  fetchList()
+  fetchCategories() // 页面加载时先查分类
+  fetchList()       // 再查图片
 })
-
-// --- 上传逻辑 (保持不变，只加了一行刷新列表) ---
-const handleSuccess: UploadProps['onSuccess'] = (response, uploadFile) => {
-  const resStr = response as string
-  if (resStr && resStr.includes('http')) {
-    imageUrl.value = resStr.split(': ')[1]
-    title.value = '' // 清空输入框
-    alert('上传成功！')
-    fetchList() // 👈 关键：上传成功后自动刷新列表
-
-
-  } else {
-    alert(response)
-  }
-}
-
-// ... 之前的 handleError 和 beforeUpload 保持不变 ...
-const handleError: UploadProps['onError'] = (error) => {
-  console.error(error)
-  alert('上传失败')
-}
-
-const beforeUpload: UploadProps['beforeUpload'] = (rawFile) => {
-  if (rawFile.size / 1024 / 1024 > 50) {
-    alert('图片太大')
-    return false
-  }
-  return true
-}
 
 // --- 新增：删除逻辑 ---
 const handleDelete = (id: number) => {
@@ -96,8 +127,11 @@ const handleDelete = (id: number) => {
 
 // --- 打开编辑弹窗 ---
 const openEdit = (item: any) => {
-  // 把当前要改的画稿信息复制给 editForm
-  editForm.value = { id: item.id, title: item.title }
+  editForm.value = {
+    id: item.id,
+    title: item.title,
+    category: item.category // 👈 新增：把当前的分类也复制进来
+  }
   editDialogVisible.value = true
 }
 
@@ -115,6 +149,7 @@ const handleUpdate = async () => {
     if (target) {
       target.title = editForm.value.title
     }
+    fetchCategories()
   } catch (error) {
     console.error(error)
     ElMessage.error('修改失败')
@@ -124,29 +159,38 @@ const handleUpdate = async () => {
 
 <template>
   <div class="container">
-    <div class="card upload-card">
-      <h1>🎨 画稿管理后台</h1>
-      <p class="subtitle">Vue 3 + TypeScript + Spring Boot</p>
+    <div class="upload-card">
+      <div class="header-title">
+        <h1>🎨 画稿管理后台</h1>
+        <p class="subtitle">Vue 3 + TypeScript + Spring Boot</p>
+      </div>
 
-      <div class="upload-row">
-        <el-input v-model="title" placeholder="给画稿起个名字..." class="input-title" />
-        <el-upload class="mini-uploader" :action="API_BASE + '/upload'" :show-file-list="false"
-          :on-success="handleSuccess" :on-error="handleError" :before-upload="beforeUpload" :data="{ title: title }"
-          name="file">
-          <el-button type="primary">点击上传新画稿</el-button>
-        </el-upload>
+      <div class="header-actions">
+        <el-input v-model="searchText" placeholder="🔍 搜索画稿标题..." class="search-input" clearable @clear="handleSearch"
+          @keyup.enter="handleSearch">
+        </el-input>
+
+        <el-button type="primary" size="large" @click="dialogVisible = true" class="upload-btn">
+          ☁️ 上传新画稿
+        </el-button>
       </div>
     </div>
 
     <div class="gallery-section">
+      <div class="category-tabs-container">
+        <el-tabs v-model="activeCategory" @tab-change="handleTabChange">
+          <el-tab-pane label="全部" name="全部"></el-tab-pane>
+          <el-tab-pane v-for="cat in categories" :key="cat" :label="cat" :name="cat"></el-tab-pane>
+        </el-tabs>
+      </div>
       <h2>📋 我的画集 ({{ artworkList.length }})</h2>
 
       <div class="waterfall-container">
         <div v-for="(item, index) in artworkList" :key="item.id" class="artwork-card">
 
           <div class="image-wrapper">
-            <el-image :src="item.imageUrl" :preview-src-list="allImageUrls" :initial-index="index" fit="cover"
-              loading="lazy" class="custom-image" :preview-teleported="true">
+            <el-image :src="item.imageUrl + '?x-oss-process=image/resize,w_500'" :preview-src-list="allImageUrls"
+              :initial-index="index" fit="cover" loading="lazy" class="custom-image" :preview-teleported="true">
               <template #placeholder>
                 <div class="image-slot">Loading...</div>
               </template>
@@ -170,14 +214,54 @@ const handleUpdate = async () => {
 
       <el-empty v-if="artworkList.length === 0" description="还没有上传画稿哦" />
     </div>
-    <el-dialog v-model="editDialogVisible" title="✏️ 修改标题" width="30%">
-      <el-input v-model="editForm.title" placeholder="请输入新的画稿名称" />
+    <el-dialog v-model="editDialogVisible" title="✏️ 修改信息" width="30%">
+      <el-form :model="editForm" label-width="80px">
+        <el-form-item label="画稿名称">
+          <el-input v-model="editForm.title" />
+        </el-form-item>
+
+        <el-form-item label="作品分类">
+          <el-select v-model="editForm.category" filterable allow-create default-first-option placeholder="请选择或输入新分类"
+            style="width: 100%">
+            <el-option v-for="item in categories" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="editDialogVisible = false">取消</el-button>
           <el-button type="primary" @click="handleUpdate">保存</el-button>
         </span>
       </template>
+    </el-dialog>
+    <el-dialog v-model="dialogVisible" title="☁️ 上传新画稿" width="30%" destroy-on-close>
+      <el-form :model="uploadForm" label-width="80px">
+        <el-form-item label="画稿名称">
+          <el-input v-model="uploadForm.title" placeholder="给你的作品起个好听的名字" />
+        </el-form-item>
+        <el-form-item label="作品分类">
+          <el-select v-model="uploadForm.category" placeholder="请选择或直接输入新分类" filterable allow-create
+            default-first-option style="width: 100%" @blur="handleCategoryBlur">
+            <el-option v-for="item in categories" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="选择图片">
+          <el-upload class="upload-demo" drag :action="API_BASE + '/upload'"
+            :data="{ title: uploadForm.title, category: uploadForm.category }" :show-file-list="true" :limit="1"
+            :on-success="handleUploadSuccess" :on-error="handleUploadError">
+            <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+            <div class="el-upload__text">
+              拖拽图片到这里 或 <em>点击上传</em>
+            </div>
+            <template #tip>
+              <div class="el-upload__tip">
+                支持 jpg/png 文件，大小不超过 10MB
+              </div>
+            </template>
+          </el-upload>
+        </el-form-item>
+      </el-form>
     </el-dialog>
   </div>
 </template>
@@ -194,30 +278,68 @@ const handleUpdate = async () => {
 }
 
 /* 上传卡片样式优化 */
+/* 顶部大卡片 */
 .upload-card {
   background: white;
-  padding: 30px;
-  border-radius: 12px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  padding: 40px;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
   text-align: center;
   margin-bottom: 40px;
-
-  /* 确保它填满容器宽度 */
-  width: 100%;
-  box-sizing: border-box;
-  /* 这是一个好习惯，防止padding撑大盒子 */
+  /* 让内容垂直排列 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.upload-row {
+/* 标题样式 */
+.header-title h1 {
+  margin: 0 0 10px 0;
+  font-size: 28px;
+  color: #2c3e50;
+  letter-spacing: 1px;
+}
+
+.subtitle {
+  color: #909399;
+  margin-bottom: 30px;
+  font-size: 14px;
+}
+
+/* 核心操作区：Flex 布局让搜索框和按钮并排 */
+.header-actions {
   display: flex;
   justify-content: center;
+  align-items: center;
   gap: 15px;
+  /* 搜索框和按钮之间的间距 */
+  width: 100%;
   max-width: 600px;
-  margin: 20px auto 0;
+  /* 限制最大宽度，防止拉得太长 */
 }
 
-.input-title {
-  width: 300px;
+/* 搜索框美化 */
+.search-input {
+  flex: 1;
+  /* 让搜索框占据剩余空间 */
+}
+
+/* 按钮微调 */
+.upload-btn {
+  padding: 0 25px;
+  font-weight: bold;
+}
+
+/* 移动端适配：手机上变成竖着排 */
+@media (max-width: 600px) {
+  .header-actions {
+    flex-direction: column;
+  }
+
+  .search-input,
+  .upload-btn {
+    width: 100%;
+  }
 }
 
 /* 画廊网格布局 (CSS Grid) */
@@ -305,18 +427,38 @@ const handleUpdate = async () => {
 .info {
   padding: 12px 16px;
   display: flex;
-  justify-content: space-between; /* 此时：左边是标题，右边是按钮组 */
+  justify-content: space-between;
+  /* 此时：左边是标题，右边是按钮组 */
   align-items: flex-start;
 }
 
 /* 👇 新增这个 */
 .btn-group {
   display: flex;
-  gap: 8px; /* 两个按钮之间的距离，你可以随意调整这个数字 */
+  gap: 8px;
+  /* 两个按钮之间的距离，你可以随意调整这个数字 */
 }
 
 /* 还可以去掉 Element Plus 按钮默认的左边距，防止干扰 */
-.btn-group .el-button + .el-button {
+.btn-group .el-button+.el-button {
   margin-left: 0;
+}
+
+/* 分类 Tab 容器 */
+.category-tabs-container {
+  max-width: 1200px;
+  margin: 0 auto 20px;
+  /* 居中，底部留空 */
+  background: white;
+  padding: 10px 20px 0;
+  /*稍微给点内边距 */
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+/* 让 Tab 文字稍微大一点 */
+:deep(.el-tabs__item) {
+  font-size: 15px;
+  font-weight: 500;
 }
 </style>
