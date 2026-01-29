@@ -1,35 +1,27 @@
 @import './base.css';
 
+/* src/style.css 或 src/assets/main.css */
+
+/* 1. 移除浏览器默认的边距 */
+body {
+  margin: 0;
+  padding: 0;
+  /* 确保背景不是死白，稍微带点灰更有质感 */
+  background-color: #f5f7fa; 
+  /* 确保占满全屏 */
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* 2. 确保 Vue 的根节点也是满宽的 */
 #app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  font-weight: normal;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  /* 千万不要在这里写 text-align: center，会影响子元素布局 */
 }
 
-a,
-.green {
-  text-decoration: none;
-  color: hsla(160, 100%, 37%, 1);
-  transition: 0.4s;
-  padding: 3px;
-}
-
-@media (hover: hover) {
-  a:hover {
-    background-color: hsla(160, 100%, 37%, 0.2);
-  }
-}
-
-@media (min-width: 1024px) {
-  body {
-    display: flex;
-    place-items: center;
-  }
-
-  #app {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    padding: 0 2rem;
-  }
+/* 3. 简单的字体优化 */
+html {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif;
 }
