@@ -3,9 +3,16 @@ import { ref, onMounted, computed } from 'vue' // 👈 加个 computed
 import type { UploadProps } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus' // 引入弹窗组件
 import axios from 'axios' // 👈 记得引入 axios
-import { Delete, Edit, Search, UploadFilled } from '@element-plus/icons-vue'
+import { Delete, Edit, Search, UploadFilled, Lock } from '@element-plus/icons-vue'
+// 2. 👇 补上这个缺失的变量定义
+const deleteLoadingId = ref<number | null>(null)
 
-const API_BASE = 'http://localhost:8080/api/artwork'
+// const API_BASE = 'http://localhost:8080/api/artwork'
+// const API_BASE = 'http://47.111.7.146:8080/api/artwork'
+const API_BASE = '/api/artwork'
+
+
+
 // --- TS 接口定义 (Type Definition) ---
 interface Artwork {
   id: number;
@@ -26,9 +33,12 @@ const activeCategory = ref('全部') // 首页选中的 Tab
 const categories = ref<string[]>([]) // 存放从后端查回来的分类列表
 const uploadForm = ref({ title: '', category: '' }) // 上传表单数据
 const dialogVisible = ref(false) // 控制弹窗显示/隐藏
+const loading = ref(true) // 默认是 true，正在加载
 
-
-
+// --- 🔐 权限控制相关 ---
+const isAdmin = ref(false) // 默认为 false (游客)
+const loginDialogVisible = ref(false) // 登录弹窗开关
+const loginPassword = ref('') // 输入的密码
 
 
 // --- 方法：获取列表 ---
@@ -42,19 +52,24 @@ const fetchCategories = async () => {
     console.error('获取分类失败', error)
   }
 }
-// 2. 获取列表 (修改：加入 category 参数)
+// 修改 fetchList 方法，控制 loading 的开关
 const fetchList = async () => {
+  loading.value = true // 👇 开始请求前，开启 loading
   try {
     const res = await axios.get(API_BASE + '/list', {
       params: {
-        title: searchText.value,     // 搜索词
-        category: activeCategory.value // 当前选中的分类
+        title: searchText.value,
+        category: activeCategory.value
       }
     })
     artworkList.value = res.data
   } catch (error) {
-    console.error('加载失败', error)
     ElMessage.error('加载失败')
+  } finally {
+    // 👇 稍微延迟一点点关闭(300ms)，为了让骨架屏展示得更平滑，防止闪烁
+    setTimeout(() => {
+      loading.value = false
+    }, 300)
   }
 }
 // 3. 监听 Tab 切换
@@ -62,16 +77,16 @@ const handleTabChange = () => {
   fetchList() // 切换分类后重新查数据
 }
 
-// 4. 上传成功回调 (修改：上传完刷新分类列表)
-const handleUploadSuccess = (response: any) => {
-  ElMessage.success('上传成功！')
-  dialogVisible.value = false
-  uploadForm.value.title = ''
-  // uploadForm.value.category = '' // 这里保留分类，方便用户连续上传同一类图片
+// // 4. 上传成功回调 (修改：上传完刷新分类列表)
+// const handleUploadSuccess = (response: any) => {
+//   ElMessage.success('上传成功！')
+//   dialogVisible.value = false
+//   uploadForm.value.title = ''
+//   // uploadForm.value.category = '' // 这里保留分类，方便用户连续上传同一类图片
 
-  fetchList()       // 刷新图片列表
-  fetchCategories() // 👈 关键：刷新分类列表 (因为可能刚刚创建了新分类)
-}
+//   fetchList()       // 刷新图片列表
+//   fetchCategories() // 👈 关键：刷新分类列表 (因为可能刚刚创建了新分类)
+// }
 
 // 上传失败的回调
 const handleUploadError = (error: any) => {
@@ -101,7 +116,39 @@ const allImageUrls = computed(() => {
 onMounted(() => {
   fetchCategories() // 页面加载时先查分类
   fetchList()       // 再查图片
+
+  //👇 新增：检查本地存储里有没有令牌
+  const token = localStorage.getItem('artwork_admin_token')
+  if (token === 'secret_token_123456') {
+    isAdmin.value = true
+  }
 })
+
+// 处理登录
+const handleLogin = () => {
+  if (loginPassword.value === 'admin888') { // 👈 这里设置你的密码！
+    ElMessage.success('欢迎回来，管理员！')
+    isAdmin.value = true
+    loginDialogVisible.value = false
+    // 存个“令牌”到浏览器，下次刷新不用重新登录
+    localStorage.setItem('artwork_admin_token', 'secret_token_123456')
+    loginPassword.value = '' // 清空密码框
+  } else {
+    ElMessage.error('密码错误，禁止访问')
+  }
+}
+
+// 处理退出
+const handleLogout = () => {
+  ElMessageBox.confirm('确定要退出管理员模式吗？', '提示').then(() => {
+    isAdmin.value = false
+    localStorage.removeItem('artwork_admin_token') // 销毁令牌
+    ElMessage.success('已切换为游客模式')
+    // 如果正在批量管理，强制退出
+    isBatchMode.value = false
+    selectedIds.value = []
+  })
+}
 
 // --- 新增：删除逻辑 ---
 const handleDelete = (id: number) => {
@@ -155,6 +202,112 @@ const handleUpdate = async () => {
     ElMessage.error('修改失败')
   }
 }
+
+// --- 批量操作相关的变量 ---
+const isBatchMode = ref(false) // 是否开启批量模式
+const selectedIds = ref<number[]>([]) // 记录选中的 ID
+
+// 开启/关闭批量模式
+const toggleBatchMode = () => {
+  isBatchMode.value = !isBatchMode.value
+  selectedIds.value = [] // 退出或进入时清空选择
+}
+
+// 选中/取消选中某张图
+const toggleSelection = (id: number) => {
+  const index = selectedIds.value.indexOf(id)
+  if (index === -1) {
+    selectedIds.value.push(id) // 没选中就加进去
+  } else {
+    selectedIds.value.splice(index, 1) // 选中了就踢出来
+  }
+}
+
+// 全选/反选
+const toggleSelectAll = () => {
+  if (selectedIds.value.length === artworkList.value.length) {
+    selectedIds.value = [] // 全不选
+  } else {
+    selectedIds.value = artworkList.value.map(item => item.id) // 全选
+  }
+}
+
+// --- 批量删除逻辑 ---
+const handleBatchDelete = () => {
+  if (selectedIds.value.length === 0) return ElMessage.warning('请先选择图片')
+
+  ElMessageBox.confirm(
+    `确定要删除选中的 ${selectedIds.value.length} 张画稿吗？`,
+    '⚠️ 批量删除警告',
+    { type: 'warning' }
+  ).then(async () => {
+    try {
+      await axios.delete(API_BASE + '/delete/batch', { data: selectedIds.value })
+      ElMessage.success('批量删除成功')
+      isBatchMode.value = false // 退出批量模式
+      fetchList() // 刷新列表
+      fetchCategories() // 刷新分类
+    } catch (e) {
+      ElMessage.error('删除失败')
+    }
+  })
+}
+
+// --- 批量移动分类逻辑 ---
+const handleBatchMove = async () => {
+  if (selectedIds.value.length === 0) return ElMessage.warning('请先选择图片')
+
+  // 弹窗让用户输入新分类
+  ElMessageBox.prompt('请输入或选择要移动到的分类', '📦 批量移动', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+  }).then(async ({ value }) => {
+    if (!value) return ElMessage.warning('分类不能为空')
+
+    try {
+      await axios.post(API_BASE + '/update/batch/category', {
+        ids: selectedIds.value,
+        category: value
+      })
+      ElMessage.success('移动成功')
+      isBatchMode.value = false
+      fetchList()
+      fetchCategories()
+    } catch (e) {
+      ElMessage.error('移动失败')
+    }
+  })
+}
+// --- 变量区域 ---
+let uploadTimer: any = null // 用来做防抖的计时器
+
+// --- 方法区域 ---
+
+// 当文件超出限制时
+const handleExceed = () => {
+  ElMessage.warning('一次最多只能上传 50 张图片！')
+}
+
+// 改造后的上传成功回调 (防抖版)
+const handleUploadSuccess = (response: any) => {
+  // 1. 这里的代码每上传成功一张图就会执行一次
+  // 我们不要在这里直接弹窗或刷新，太吵了
+
+  // 2. 清除之前的计时器
+  if (uploadTimer) clearTimeout(uploadTimer)
+
+  // 3. 重新开始计时 (1秒后执行)
+  uploadTimer = setTimeout(() => {
+    // === 只有当 1 秒内没有新图片传完时，才执行下面这些 ===
+    ElMessage.success('所有图片上传完成！')
+    dialogVisible.value = false
+    uploadForm.value.title = ''
+    // uploadForm.value.category = '' // 看你需求是否重置
+
+    fetchList()       // 刷新列表
+    fetchCategories() // 刷新分类
+  }, 1000)
+}
 </script>
 
 <template>
@@ -169,10 +322,22 @@ const handleUpdate = async () => {
         <el-input v-model="searchText" placeholder="🔍 搜索画稿标题..." class="search-input" clearable @clear="handleSearch"
           @keyup.enter="handleSearch">
         </el-input>
-
-        <el-button type="primary" size="large" @click="dialogVisible = true" class="upload-btn">
-          ☁️ 上传新画稿
+        <template v-if="isAdmin">
+          <el-button class="batch-btn" :type="isBatchMode ? 'danger' : 'default'" @click="toggleBatchMode">
+            {{ isBatchMode ? '❌ 退出管理' : '✅ 批量管理' }}
+          </el-button>
+          <el-button type="primary" size="large" @click="dialogVisible = true" class="upload-btn">
+            ☁️ 上传新画稿
+          </el-button>
+        </template>
+        <el-button 
+          :type="isAdmin ? 'info' : 'primary'" 
+          plain 
+          @click="isAdmin ? handleLogout() : (loginDialogVisible = true)"
+        >
+          {{ isAdmin ? '🔒 退出' : '🔑 登录' }}
         </el-button>
+
       </div>
     </div>
 
@@ -184,33 +349,58 @@ const handleUpdate = async () => {
         </el-tabs>
       </div>
       <h2>📋 我的画集 ({{ artworkList.length }})</h2>
-
-      <div class="waterfall-container">
-        <div v-for="(item, index) in artworkList" :key="item.id" class="artwork-card">
-
-          <div class="image-wrapper">
-            <el-image :src="item.imageUrl + '?x-oss-process=image/resize,w_500'" :preview-src-list="allImageUrls"
-              :initial-index="index" fit="cover" loading="lazy" class="custom-image" :preview-teleported="true">
-              <template #placeholder>
-                <div class="image-slot">Loading...</div>
-              </template>
-            </el-image>
-          </div>
-
-          <div class="info">
-            <div class="title-box">
-              <h3>{{ item.title }}</h3>
-              <!-- <span class="id-tag">#{{ item.id }}</span> -->
-            </div>
-
-            <div class="btn-group">
-              <el-button type="primary" circle plain size="small" :icon="Edit" @click.stop="openEdit(item)" />
-              <el-button type="danger" circle plain size="small" :icon="Delete" :loading="deleteLoadingId === item.id"
-                @click.stop="handleDelete(item.id)" />
+      <el-skeleton :loading="loading" animated :count="4">
+        <template #template>
+          <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+            <div style="width: 23%; margin-bottom: 20px" v-for="i in 4" :key="i">
+              <el-skeleton-item variant="image" style="width: 100%; height: 240px; border-radius: 12px" />
+              <div style="padding: 14px;">
+                <el-skeleton-item variant="h3" style="width: 50%" />
+                <div style="display: flex; justify-content: space-between; margin-top: 10px">
+                  <el-skeleton-item variant="text" style="width: 30%" />
+                  <el-skeleton-item variant="circle" style="width: 30px; height: 30px" />
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </template>
+
+        <template #default>
+          <div class="waterfall-container">
+            <div v-for="(item, index) in artworkList" :key="item.id" class="artwork-card">
+              <div class="image-wrapper" @click="isAdmin && isBatchMode && toggleSelection(item.id)">
+                <el-image :src="item.imageUrl + '?x-oss-process=image/resize,w_500'" :preview-src-list="allImageUrls"
+                  :initial-index="index" fit="cover" loading="lazy" class="custom-image" :preview-teleported="true">
+                  <template #placeholder>
+                    <div class="image-slot">Loading...</div>
+                  </template>
+                </el-image>
+                <div v-if="isBatchMode" class="batch-overlay" :class="{ selected: selectedIds.includes(item.id) }">
+                  <div class="checkbox-circle">
+                    <span v-if="selectedIds.includes(item.id)">✔</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="info">
+                <div class="title-box">
+                  <h3>{{ item.title }}</h3>
+                  <!-- <span class="id-tag">#{{ item.id }}</span> -->
+                </div>
+
+                <div class="btn-group" v-if="!isBatchMode && isAdmin">
+                  <el-button type="primary" circle plain size="small" :icon="Edit" @click.stop="openEdit(item)" />
+                  <el-button type="danger" circle plain size="small" :icon="Delete"
+                    :loading="deleteLoadingId === item.id" @click.stop="handleDelete(item.id)" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+      </el-skeleton>
+
+
 
       <el-empty v-if="artworkList.length === 0" description="还没有上传画稿哦" />
     </div>
@@ -247,9 +437,9 @@ const handleUpdate = async () => {
           </el-select>
         </el-form-item>
         <el-form-item label="选择图片">
-          <el-upload class="upload-demo" drag :action="API_BASE + '/upload'"
-            :data="{ title: uploadForm.title, category: uploadForm.category }" :show-file-list="true" :limit="1"
-            :on-success="handleUploadSuccess" :on-error="handleUploadError">
+          <el-upload class="upload-demo" drag multiple :limit="50" :action="API_BASE + '/upload'"
+            :data="{ title: uploadForm.title, category: uploadForm.category }" :show-file-list="true"
+            :on-success="handleUploadSuccess" :on-error="handleUploadError" :on-exceed="handleExceed">
             <el-icon class="el-icon--upload"><upload-filled /></el-icon>
             <div class="el-upload__text">
               拖拽图片到这里 或 <em>点击上传</em>
@@ -263,6 +453,37 @@ const handleUpdate = async () => {
         </el-form-item>
       </el-form>
     </el-dialog>
+    <el-dialog v-model="loginDialogVisible" title="🛡️ 管理员认证" width="300px" center>
+      <div style="text-align: center; margin-bottom: 20px; color: #666;">
+        请输入管理密码以解锁编辑权限
+      </div>
+
+      <el-input v-model="loginPassword" type="password" placeholder="请输入密码" show-password @keyup.enter="handleLogin">
+        <template #prefix>
+          <el-icon>
+            <Lock />
+          </el-icon>
+        </template>
+      </el-input>
+
+      <template #footer>
+        <el-button type="primary" style="width: 100%" @click="handleLogin">
+          解锁权限
+        </el-button>
+      </template>
+    </el-dialog>
+    <transition name="el-fade-in-linear">
+      <div v-if="isBatchMode" class="batch-bar">
+        <div class="batch-info">
+          已选择 <b>{{ selectedIds.length }}</b> 张
+          <el-button link type="primary" @click="toggleSelectAll">全选/反选</el-button>
+        </div>
+        <div class="batch-actions">
+          <el-button type="warning" @click="handleBatchMove">📦 移动分类</el-button>
+          <el-button type="danger" @click="handleBatchDelete">🗑️ 批量删除</el-button>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -275,6 +496,22 @@ const handleUpdate = async () => {
   margin: 0 auto;
 
   padding: 40px 20px;
+}
+
+/* 强制固定按钮宽度，防止切换文字时抖动 */
+.batch-btn {
+  width: 120px;
+  /* 👈 核心：根据实际情况调整，宽一点没关系 */
+  text-align: center;
+  /* 让文字在按钮里居中 */
+  flex-shrink: 0;
+  /* 防止被搜索框挤扁 */
+}
+
+/* (可选) 如果你的顶部栏用了 flex 居中，防止整个行抖动 */
+.header-actions {
+  /* 确保对齐方式稳固 */
+  align-items: center;
 }
 
 /* 上传卡片样式优化 */
@@ -397,11 +634,27 @@ const handleUpdate = async () => {
 }
 
 /* 图片容器 */
+/* 修改原本的 .image-wrapper */
 .image-wrapper {
+  position: relative;
   width: 100%;
-  /* 移除固定高度，让图片撑开容器 */
   line-height: 0;
   background-color: #f8f8f8;
+  overflow: hidden;
+  /* 👈 关键：防止图片放大后溢出圆角 */
+  cursor: pointer;
+  /* 鼠标变手型 */
+}
+
+/* 这是一个深层选择器，用来选中 el-image 内部真正的 img 标签 */
+:deep(.el-image__inner) {
+  transition: transform 0.5s ease;
+  /* 👈 加上过渡动画 */
+}
+
+/* 鼠标悬停在卡片上时，图片放大 1.05 倍 */
+.artwork-card:hover :deep(.el-image__inner) {
+  transform: scale(1.05);
 }
 
 /* 修正 Element Image 组件的样式 */
@@ -460,5 +713,103 @@ const handleUpdate = async () => {
 :deep(.el-tabs__item) {
   font-size: 15px;
   font-weight: 500;
+}
+
+/* 底部悬浮栏 */
+.batch-bar {
+  position: fixed;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  padding: 15px 30px;
+  border-radius: 50px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  z-index: 2000;
+  border: 1px solid #ebeef5;
+}
+
+.batch-info b {
+  color: #409EFF;
+  font-size: 18px;
+  margin: 0 5px;
+}
+
+/* 批量模式下的遮罩层 */
+.batch-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0);
+  /* 默认完全透明 */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  /* 👇 核心修复：加上 box-sizing 和 透明边框 */
+  box-sizing: border-box;
+  border: 4px solid transparent;
+  /* 先占位，防止抖动 */
+}
+
+/* 选中状态 */
+.batch-overlay.selected {
+  background: rgba(64, 158, 255, 0.2);
+  border: 4px solid #409EFF;
+  /* 选中时变成蓝色，因为有box-sizing，不会撑大盒子 */
+}
+
+/* 鼠标悬停时稍微给点提示 (可选) */
+.image-wrapper:hover .batch-overlay {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 复选圈圈 */
+.checkbox-circle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #dcdfe6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: white;
+  transition: all 0.2s;
+}
+
+.batch-overlay.selected .checkbox-circle {
+  background: #409EFF;
+  border-color: #409EFF;
+}
+.batch-bar {
+    width: 90% !important;       /* 宽度变小 */
+    padding: 10px 15px !important; /* 内边距减小 */
+    bottom: 20px !important;     /* 离底部稍微近一点 */
+    gap: 10px !important;        /* 按钮间距挤一点 */
+    flex-direction: column;      /* 如果按钮太多，竖着排(可选) */
+  }
+  
+  .batch-info {
+    font-size: 14px;
+  }
+</style>
+<style>
+@media screen and (max-width: 768px) {
+  /* 强制覆盖 Element Plus 的弹窗宽度 */
+  .el-dialog {
+    width: 90% !important;
+    max-width: 90% !important;
+  }
 }
 </style>
